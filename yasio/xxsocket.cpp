@@ -462,117 +462,6 @@ static int inet_pton6(const char* src, u_char* dst)
 } // namespace inet
 } // namespace yasio
 
-static int getipsv_internal(void)
-{
-  int flags = 0;
-  int count = 0;
-  /* Only windows support use getaddrinfo to get local ip address(not loopback or linklocal),
-    Because nullptr same as "localhost": always return loopback address and at unix/linux the
-    gethostname always return "localhost"
-    */
-#if defined(_WIN32)
-  char hostname[256] = {0};
-  gethostname(hostname, sizeof(hostname));
-
-  // ipv4 & ipv6
-  addrinfo hint, *ailist = nullptr;
-  memset(&hint, 0x0, sizeof(hint));
-
-  endpoint ep;
-#  if defined(_DEBUG)
-  YASIO_LOG("getipsv_internal: localhost=%s", hostname);
-#  endif
-  int iret = getaddrinfo(hostname, nullptr, &hint, &ailist);
-
-  const char* errmsg = nullptr;
-  if (ailist != nullptr)
-  {
-    for (auto aip = ailist; aip != NULL; aip = aip->ai_next)
-    {
-      memcpy(&ep, aip->ai_addr, aip->ai_addrlen);
-
-      auto straddr = ep.to_string();
-      YASIO_LOGV("getipsv_internal: endpoint=%s", straddr.c_str());
-      ++count;
-      switch (ep.af())
-      {
-        case AF_INET:
-          if (!IN4_IS_ADDR_LOOPBACK(&ep.in4_.sin_addr) && !IN4_IS_ADDR_LINKLOCAL(&ep.in4_.sin_addr))
-            flags |= ipsv_ipv4;
-          break;
-        case AF_INET6:
-          if (IN6_IS_ADDR_GLOBAL(&ep.in6_.sin6_addr))
-            flags |= ipsv_ipv6;
-          break;
-      }
-      if (flags == ipsv_dual_stack)
-        break;
-    }
-    freeaddrinfo(ailist);
-  }
-  else
-  {
-    errmsg = xxsocket::gai_strerror(iret);
-  }
-#else // __APPLE__ or linux with <ifaddrs.h>
-  struct ifaddrs *ifaddr, *ifa;
-  /*
-  The value of ifa->ifa_name:
-   Android:
-    wifi: "w"
-    cellular: "r"
-   iOS:
-    wifi: "en0"
-    cellular: "pdp_ip0"
-  */
-
-  if (getifaddrs(&ifaddr) == -1)
-  {
-    YASIO_LOG("getipsv_internal: getifaddrs fail!");
-    return ipsv_ipv4;
-  }
-
-  endpoint ep;
-  /* Walk through linked list*/
-  for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next)
-  {
-    if (ifa->ifa_addr == NULL)
-      continue;
-
-    ep.assign(ifa->ifa_addr);
-
-    auto straddr = ep.to_string();
-    if (!straddr.empty())
-    {
-      ++count;
-      YASIO_LOGV("getipsv_internal: endpoint=%s", straddr.c_str());
-    }
-
-    switch (ep.af())
-    {
-      case AF_INET:
-        if (!IN4_IS_ADDR_LOOPBACK(&ep.in4_.sin_addr) && !IN4_IS_ADDR_LINKLOCAL(&ep.in4_.sin_addr))
-          flags |= ipsv_ipv4;
-        break;
-      case AF_INET6:
-        if (IN6_IS_ADDR_GLOBAL(&ep.in6_.sin6_addr))
-          flags |= ipsv_ipv6;
-        break;
-    }
-    if (flags == ipsv_dual_stack)
-      break;
-  }
-
-  freeifaddrs(ifaddr);
-#endif
-
-  YASIO_LOG("getipsv_internal: flags=%d, ifa_count=%d", flags, count);
-
-  return flags;
-}
-
-int xxsocket::getipsv(void) { return getipsv_internal(); }
-
 int xxsocket::xpconnect(const char* hostname, u_short port, u_short local_port)
 {
   auto flags = getipsv();
@@ -679,7 +568,7 @@ int xxsocket::pconnect(const endpoint& ep, u_short local_port)
   if (this->reopen(ep.af()))
   {
     if (local_port != 0)
-      this->bind("0.0.0.0", local_port);
+      this->bind(YASIO_ADDR_ANY(ep.af()), local_port);
     return this->connect(ep);
   }
   return -1;
@@ -691,7 +580,7 @@ int xxsocket::pconnect_n(const endpoint& ep, const std::chrono::microseconds& wt
   if (this->reopen(ep.af()))
   {
     if (local_port != 0)
-      this->bind("0.0.0.0", local_port);
+      this->bind(YASIO_ADDR_ANY(ep.af()), local_port);
     return this->connect_n(ep, wtimeout);
   }
   return -1;
@@ -702,7 +591,7 @@ int xxsocket::pconnect_n(const endpoint& ep, u_short local_port)
   if (this->reopen(ep.af()))
   {
     if (local_port != 0)
-      this->bind("0.0.0.0", local_port);
+      this->bind(YASIO_ADDR_ANY(ep.af()), local_port);
     return xxsocket::connect_n(this->fd, ep);
   }
   return -1;
@@ -777,6 +666,122 @@ int xxsocket::resolve_tov6(std::vector<endpoint>& endpoints, const char* hostnam
         return false;
       },
       hostname, port, AF_INET6, AI_ALL | AI_V4MAPPED, socktype);
+}
+
+int xxsocket::getipsv(void)
+{
+  int flags = 0;
+  xxsocket::traverse_local_address([&](const ip::endpoint& ep) -> bool {
+    switch (ep.af())
+    {
+      case AF_INET:
+        flags |= ipsv_ipv4;
+        break;
+      case AF_INET6:
+        flags |= ipsv_ipv6;
+        break;
+    }
+    return (flags == ipsv_dual_stack);
+  });
+  YASIO_LOG("xxsocket::getipsv: flags=%d", flags);
+  return flags;
+}
+
+void xxsocket::traverse_local_address(std::function<bool(const ip::endpoint&)> handler)
+{
+  bool done = false;
+  /* Only windows support use getaddrinfo to get local ip address(not loopback or linklocal),
+    Because nullptr same as "localhost": always return loopback address and at unix/linux the
+    gethostname always return "localhost"
+    */
+#if defined(_WIN32)
+  char hostname[256] = {0};
+  ::gethostname(hostname, sizeof(hostname));
+
+  // ipv4 & ipv6
+  addrinfo hint, *ailist = nullptr;
+  ::memset(&hint, 0x0, sizeof(hint));
+
+  endpoint ep;
+#  if defined(_DEBUG)
+  YASIO_LOG("xxsocket::traverse_local_address: localhost=%s", hostname);
+#  endif
+  int iret = getaddrinfo(hostname, nullptr, &hint, &ailist);
+
+  const char* errmsg = nullptr;
+  if (ailist != nullptr)
+  {
+    for (auto aip = ailist; aip != NULL; aip = aip->ai_next)
+    {
+      ::memcpy(&ep, aip->ai_addr, aip->ai_addrlen);
+
+      YASIO_LOGV("xxsocket::traverse_local_address: ip=%s", ep.ip().c_str());
+      switch (ep.af())
+      {
+        case AF_INET:
+          if (!IN4_IS_ADDR_LOOPBACK(&ep.in4_.sin_addr) && !IN4_IS_ADDR_LINKLOCAL(&ep.in4_.sin_addr))
+            done = handler(ep);
+          break;
+        case AF_INET6:
+          if (IN6_IS_ADDR_GLOBAL(&ep.in6_.sin6_addr))
+            done = handler(ep);
+          break;
+      }
+      if (done)
+        break;
+    }
+    freeaddrinfo(ailist);
+  }
+  else
+  {
+    errmsg = xxsocket::gai_strerror(iret);
+  }
+#else // __APPLE__ or linux with <ifaddrs.h>
+  struct ifaddrs *ifaddr, *ifa;
+  /*
+  The value of ifa->ifa_name:
+   Android:
+    wifi: "w"
+    cellular: "r"
+   iOS:
+    wifi: "en0"
+    cellular: "pdp_ip0"
+  */
+
+  if (yasio::getifaddrs(&ifaddr) == -1)
+  {
+    YASIO_LOG("xxsocket::traverse_local_address: getifaddrs fail!");
+    return;
+  }
+
+  endpoint ep;
+  /* Walk through linked list*/
+  for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next)
+  {
+    if (ifa->ifa_addr == NULL)
+      continue;
+
+    ep.assign(ifa->ifa_addr);
+
+    YASIO_LOGV("xxsocket::traverse_local_address: ip=%s", ep.ip().c_str());
+
+    switch (ep.af())
+    {
+      case AF_INET:
+        if (!IN4_IS_ADDR_LOOPBACK(&ep.in4_.sin_addr) && !IN4_IS_ADDR_LINKLOCAL(&ep.in4_.sin_addr))
+          done = handler(ep);
+        break;
+      case AF_INET6:
+        if (IN6_IS_ADDR_GLOBAL(&ep.in6_.sin6_addr))
+          done = handler(ep);
+        break;
+    }
+    if (done)
+      break;
+  }
+
+  yasio::freeifaddrs(ifaddr);
+#endif
 }
 
 xxsocket::xxsocket(void) : fd(invalid_socket) {}
@@ -998,41 +1003,16 @@ int xxsocket::connect(socket_native_type s, const endpoint& ep)
 
 int xxsocket::connect_n(const char* addr, u_short port, const std::chrono::microseconds& wtimeout)
 {
-  timeval timeout = {
-      static_cast<decltype(timeval::tv_sec)>(wtimeout.count() / MICROSECONDS_PER_SECOND),
-      static_cast<decltype(timeval::tv_usec)>(wtimeout.count() % MICROSECONDS_PER_SECOND)};
-  return connect_n(addr, port, &timeout);
+  return connect_n(ip::endpoint(addr, port), wtimeout);
 }
 
 int xxsocket::connect_n(const endpoint& ep, const std::chrono::microseconds& wtimeout)
 {
-  timeval timeout = {
-      static_cast<decltype(timeval::tv_sec)>(wtimeout.count() / MICROSECONDS_PER_SECOND),
-      static_cast<decltype(timeval::tv_usec)>(wtimeout.count() % MICROSECONDS_PER_SECOND)};
-  return connect_n(ep, &timeout);
+  return this->connect_n(this->fd, ep, wtimeout);
 }
 
-int xxsocket::connect_n(const char* addr, u_short port, timeval* timeout)
-{
-  return connect_n(endpoint(addr, port), timeout);
-}
-
-int xxsocket::connect_n(const endpoint& ep, timeval* timeout)
-{
-  if (xxsocket::connect_n(this->fd, ep, timeout) != 0)
-  {
-    this->fd = invalid_socket;
-    return -1;
-  }
-  return 0;
-}
-
-int xxsocket::connect_n(socket_native_type s, const char* addr, u_short port, timeval* timeout)
-{
-  return connect_n(s, endpoint(addr, port), timeout);
-}
-
-int xxsocket::connect_n(socket_native_type s, const endpoint& ep, timeval* timeout)
+int xxsocket::connect_n(socket_native_type s, const endpoint& ep,
+                        const std::chrono::microseconds& wtimeout)
 {
   fd_set rset, wset;
   int n, error = 0;
@@ -1050,30 +1030,19 @@ int xxsocket::connect_n(socket_native_type s, const endpoint& ep, timeval* timeo
   if (n == 0)
     goto done; /* connect completed immediately */
 
-  FD_ZERO(&rset);
-  FD_SET(s, &rset);
-  wset = rset;
-
-  if ((n = ::select(static_cast<int>(s + 1), &rset, &wset, NULL, timeout)) == 0)
-  {
-    ::closesocket(s); /* timeout */
-    xxsocket::set_last_errno(ETIMEDOUT);
-    return (-1);
-  }
-
-  if (FD_ISSET(s, &rset) || FD_ISSET(s, &wset))
-  {
+  if ((n = xxsocket::select(s, &rset, &wset, NULL, wtimeout)) <= 0)
+    error = xxsocket::get_last_errno();
+  else if ((FD_ISSET(s, &rset) || FD_ISSET(s, &wset)))
+  { /* Everythings are ok */
     socklen_t len = sizeof(error);
     if (::getsockopt(s, SOL_SOCKET, SO_ERROR, (char*)&error, &len) < 0)
       return (-1); /* Solaris pending error */
   }
-  else
-    return -1;
+
 done:
   if (error != 0)
   {
     ::closesocket(s); /* just in case */
-    xxsocket::set_last_errno(error);
     return (-1);
   }
 
@@ -1093,16 +1062,11 @@ int xxsocket::connect_n(socket_native_type s, const endpoint& ep)
 
 int xxsocket::send_n(const void* buf, int len, const std::chrono::microseconds& wtimeout, int flags)
 {
-  return send_n(this->fd, buf, len, wtimeout.count(), flags);
+  return this->send_n(this->fd, buf, len, wtimeout, flags);
 }
 
-int xxsocket::send_n(const void* buf, int len, long long timeout_usec, int flags)
-{
-  return xxsocket::send_n(this->fd, buf, len, timeout_usec, flags);
-}
-
-int xxsocket::send_n(socket_native_type s, const void* buf, int len, long long timeout_usec,
-                     int flags)
+int xxsocket::send_n(socket_native_type s, const void* buf, int len,
+                     std::chrono::microseconds wtimeout, int flags)
 {
   int bytes_transferred;
   int n;
@@ -1128,17 +1092,14 @@ int xxsocket::send_n(socket_native_type s, const void* buf, int len, long long t
       {
 
         // Wait upto <timeout> for the blocking to subside.
-        timeval waitd_tv = {
-            static_cast<decltype(timeval::tv_sec)>(timeout_usec / MICROSECONDS_PER_SECOND),
-            static_cast<decltype(timeval::tv_usec)>(timeout_usec % MICROSECONDS_PER_SECOND)};
         auto start    = yasio::highp_clock();
-        int const rtn = handle_write_ready(s, &waitd_tv);
-        timeout_usec -= (yasio::highp_clock() - start);
+        int const rtn = handle_write_ready(s, wtimeout);
+        wtimeout -= std::chrono::microseconds(yasio::highp_clock() - start);
 
         // Did select() succeed?
         if (rtn != -1)
         {
-          if (timeout_usec > 0)
+          if (wtimeout.count() > 0)
           {
             // Blocking subsided in <timeout> period.  Continue
             // data transfer.
@@ -1161,15 +1122,11 @@ int xxsocket::send_n(socket_native_type s, const void* buf, int len, long long t
 
 int xxsocket::recv_n(void* buf, int len, const std::chrono::microseconds& wtimeout, int flags) const
 {
-  return recv_n(this->fd, buf, len, wtimeout.count(), flags);
+  return this->recv_n(this->fd, buf, len, wtimeout, flags);
 }
 
-int xxsocket::recv_n(void* buf, int len, long long timeout_usec, int flags) const
-{
-  return recv_n(this->fd, buf, len, timeout_usec, flags);
-}
-
-int xxsocket::recv_n(socket_native_type s, void* buf, int len, long long timeout_usec, int flags)
+int xxsocket::recv_n(socket_native_type s, void* buf, int len, std::chrono::microseconds wtimeout,
+                     int flags)
 {
   int bytes_transferred;
   int n;
@@ -1193,19 +1150,14 @@ int xxsocket::recv_n(socket_native_type s, void* buf, int len, long long timeout
       if (n == -1 && (ec == EAGAIN || ec == EINTR || ec == EWOULDBLOCK || ec == EINPROGRESS))
       {
         // Wait upto <timeout> for the blocking to subside.
-        timeval waitd_tv = {
-            static_cast<decltype(timeval::tv_sec)>(timeout_usec / MICROSECONDS_PER_SECOND),
-            static_cast<decltype(timeval::tv_usec)>(timeout_usec % MICROSECONDS_PER_SECOND)};
-
         auto start    = yasio::highp_clock();
-        int const rtn = handle_read_ready(s, &waitd_tv);
-
-        timeout_usec -= (yasio::highp_clock() - start);
+        int const rtn = handle_read_ready(s, wtimeout);
+        wtimeout -= std::chrono::microseconds(yasio::highp_clock() - start);
 
         // Did select() succeed?
         if (rtn != -1)
         {
-          if (timeout_usec > 0)
+          if (wtimeout.count() > 0)
           {
             // Blocking subsided in <timeout> period.  Continue
             // data transfer.
@@ -1258,30 +1210,15 @@ int xxsocket::recvfrom(void* buf, int len, endpoint& from, int flags) const
   return static_cast<int>(::recvfrom(this->fd, (char*)buf, len, flags, &from.sa_, &addrlen));
 }
 
-int xxsocket::handle_write_ready(timeval* timeo) const
+int xxsocket::handle_write_ready(const std::chrono::microseconds& wtimeout) const
 {
-  return handle_write_ready(this->fd, timeo);
+  return handle_write_ready(this->fd, wtimeout);
 }
 
-int xxsocket::handle_write_ready(socket_native_type s, timeval* timeo)
+int xxsocket::handle_write_ready(socket_native_type s, const std::chrono::microseconds& wtimeout)
 {
-  fd_set fds_wr;
-  FD_ZERO(&fds_wr);
-  FD_SET(s, &fds_wr);
-  int ret = ::select(static_cast<int>(s + 1), nullptr, &fds_wr, nullptr, timeo);
-  return ret;
-}
-
-int xxsocket::handle_connect_ready(socket_native_type s, timeval* timeo)
-{
-  fd_set fds_wr;
-  FD_ZERO(&fds_wr);
-  FD_SET(s, &fds_wr);
-
-  if (::select(0, nullptr, &fds_wr, nullptr, timeo) > 0 && FD_ISSET(s, &fds_wr))
-    return 0;
-
-  return -1;
+  fd_set writefds;
+  return xxsocket::select(s, nullptr, &writefds, nullptr, wtimeout);
 }
 
 int xxsocket::handle_read_ready(const std::chrono::microseconds& wtimeout) const
@@ -1289,23 +1226,52 @@ int xxsocket::handle_read_ready(const std::chrono::microseconds& wtimeout) const
   return handle_read_ready(this->fd, wtimeout);
 }
 
-int xxsocket::handle_read_ready(timeval* timeo) const { return handle_read_ready(this->fd, timeo); }
-
 int xxsocket::handle_read_ready(socket_native_type s, const std::chrono::microseconds& wtimeout)
 {
-  timeval timeout = {
-      static_cast<decltype(timeval::tv_sec)>(wtimeout.count() / MICROSECONDS_PER_SECOND),
-      static_cast<decltype(timeval::tv_usec)>(wtimeout.count() % MICROSECONDS_PER_SECOND)};
-  return handle_read_ready(s, &timeout);
+  fd_set readfds;
+  return xxsocket::select(s, &readfds, nullptr, nullptr, wtimeout);
 }
 
-int xxsocket::handle_read_ready(socket_native_type s, timeval* timeo)
+int xxsocket::select(socket_native_type s, fd_set* readfds, fd_set* writefds, fd_set* exceptfds,
+                     std::chrono::microseconds wtimeout)
 {
-  fd_set fds_rd;
-  FD_ZERO(&fds_rd);
-  FD_SET(s, &fds_rd);
-  int ret = ::select(static_cast<int>(s + 1), &fds_rd, nullptr, nullptr, timeo);
-  return ret;
+  int n = 0;
+
+  for (;;)
+  {
+    reregister_descriptor(s, readfds);
+    reregister_descriptor(s, writefds);
+    reregister_descriptor(s, exceptfds);
+
+    timeval waitd_tv = {
+        static_cast<decltype(timeval::tv_sec)>(wtimeout.count() / std::micro::den),
+        static_cast<decltype(timeval::tv_usec)>(wtimeout.count() % std::micro::den)};
+    long long start = highp_clock();
+    n               = ::select(static_cast<int>(s + 1), readfds, writefds, exceptfds, &waitd_tv);
+    wtimeout -= std::chrono::microseconds(highp_clock() - start);
+
+    if (n < 0 && xxsocket::get_last_errno() == EINTR)
+    {
+      if (wtimeout.count() > 0)
+        continue;
+      n = 0;
+    }
+
+    if (n == 0)
+      xxsocket::set_last_errno(ETIMEDOUT);
+    break;
+  }
+
+  return n;
+}
+
+void xxsocket::reregister_descriptor(socket_native_type s, fd_set* fds)
+{
+  if (fds)
+  {
+    FD_ZERO(fds);
+    FD_SET(s, fds);
+  }
 }
 
 endpoint xxsocket::local_endpoint(void) const { return local_endpoint(this->fd); }

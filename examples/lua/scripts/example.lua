@@ -1,4 +1,4 @@
--- yasio 3.31 demo
+-- yasio 3.33 demo
 require 'protocol_base'
 require 'protocol_enc'
 require 'protocol_dec'
@@ -17,7 +17,7 @@ local server = io_service.new(hostents)
 
 local transport1 = nil
 local data_partial2 = nil
-server:start_service(function(event)
+server:start(function(event)
         local t = event:kind()
         if t == yasio.YEK_PACKET then
         elseif(t == yasio.YEK_CONNECT_RESPONSE) then -- connect responseType
@@ -39,7 +39,7 @@ server:start_service(function(event)
                 local data_partial1 = data:sub(1, #data - 10)
                 server:write(transport, data_partial1)
 
-                print('The remain data will be sent after 6 seconds...')
+                print('The remain data will be sent after 3 seconds...')
                 transport1 = transport
                 data_partial2 = data:sub(#data - 10 + 1, #data)
             else
@@ -49,8 +49,8 @@ server:start_service(function(event)
             print("The connection is lost!")
         end
     end)
-server:open(0, yasio.YCM_TCP_SERVER)
-server:open(1, yasio.YCM_TCP_SERVER)
+server:open(0, yasio.YCK_TCP_SERVER)
+server:open(1, yasio.YCK_TCP_SERVER)
 
 hostent.host = "127.0.0.1"
 local client = io_service.new(hostent)
@@ -64,7 +64,7 @@ client:set_option(yasio.YOPT_C_LFBFD_PARAMS,
     0 -- lengthAdjustment：如果长度字段字节大小包含包头，则为0， 否则，这里=包头大小
 )
 
-client:start_service(function(event)
+client:start(function(event)
         local t = event:kind()
         if t == yasio.YEK_PACKET then
             local ibs = event:packet()
@@ -87,16 +87,13 @@ client:start_service(function(event)
             print("The connection is lost!")
         end
     end)
-client:open(0, yasio.YCM_TCP_CLIENT)
+client:open(0, yasio.YCK_TCP_CLIENT)
 
 -- httpclient 
-local http_client = require 'yasio_lext.http_client'
+local http_client = require 'http_client'
 http_client:sendHttpGetRequest('http://ip138.com/index.htm', function(respData)
     print(respData)
-end)
-
-http_client:sendHttpGetRequest('http://ip138.com/index.htm', function(respData)
-    print(respData)
+    stopFlag = stopFlag + 1
 end)
 
 local elapsedTime = 0
@@ -107,7 +104,7 @@ local function yasio_update(dt)
     client:dispatch(128)
     http_client:update()
     elapsedTime = elapsedTime + dt
-    if elapsedTime > 6 and not partial2Sent then
+    if elapsedTime > 3 and not partial2Sent then
         partial2Sent = true
         if transport1 then
             server:write(transport1, data_partial2)

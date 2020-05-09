@@ -40,7 +40,7 @@ void yasioTest()
 
   resolv_fn_t resolv = [&](std::vector<ip::endpoint>& endpoints, const char* hostname,
                            unsigned short port) {
-    return service.__builtin_resolv(endpoints, hostname, port);
+    return service.builtin_resolv(endpoints, hostname, port);
   };
   service.set_option(YOPT_S_RESOLV_FN, &resolv);
 
@@ -50,9 +50,9 @@ void yasioTest()
   deadline_timer udp_heartbeat(service);
   int total_bytes_transferred = 0;
 
-  int max_request_count = 10;
-
-  service.start_service([&](event_ptr&& event) {
+  int max_request_count = 1;
+  service.set_option(YOPT_S_DEFERRED_EVENT, 0);
+  service.start([&](event_ptr&& event) {
     switch (event->kind())
     {
       case YEK_PACKET: {
@@ -80,6 +80,8 @@ void yasioTest()
             obs.write_bytes("Connection: Close\r\n\r\n");
 
             service.write(transport, std::move(obs.buffer()));
+
+            // service.close(transport, YWF_WRITE);
           }
 
           transports.push_back(transport);
@@ -92,10 +94,12 @@ void yasioTest()
         if (--max_request_count > 0)
         {
           udpconn_delay.expires_from_now(std::chrono::seconds(1));
-          udpconn_delay.async_wait([&]() { service.open(0); });
+          udpconn_delay.async_wait_once([&]() {
+            service.open(0);
+          });
         }
         else
-          service.stop_service();
+          service.stop();
         break;
     }
   });
@@ -110,7 +114,6 @@ void yasioTest()
 
   std::this_thread::sleep_for(std::chrono::seconds(1));
   service.open(0); // open http client
-
   time_t duration = 0;
   while (service.is_running())
   {

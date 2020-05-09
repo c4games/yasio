@@ -33,7 +33,7 @@ See: https://github.com/bitwizeshift/string_view-standalone
 #include <string.h>
 #include <wchar.h>
 #include <string>
-#include "yasio/cxx17/feature_test.hpp"
+#include "yasio/compiler/feature_test.hpp"
 
 /// wcsncasecmp workaround for android API level < 23, copy from msvc ucrt 10.0.18362.0 'wcsnicmp'
 #if defined(__ANDROID_API__) && __ANDROID_API__ < 23
@@ -67,12 +67,6 @@ inline int wcsncasecmp(wchar_t const* const lhs, wchar_t const* const rhs, size_
 #  if __has_include(<string_view>)
 #    include <string_view>
 #  endif
-namespace cxx17
-{
-using std::basic_string_view;
-using std::string_view;
-using std::wstring_view;
-} // namespace cxx17
 #else
 #  include <algorithm>
 #  include <exception>
@@ -773,7 +767,7 @@ basic_string_view<_CharT, _Traits>::data() const
 
 template <typename _CharT, typename _Traits>
 inline typename basic_string_view<_CharT, _Traits>::const_reference
-    basic_string_view<_CharT, _Traits>::operator[](size_t pos) const
+basic_string_view<_CharT, _Traits>::operator[](size_t pos) const
 {
   return m_str[pos];
 }
@@ -1362,8 +1356,74 @@ inline bool operator>=(const basic_string_view<_CharT, _Traits>& lhs,
 {
   return lhs >= basic_string_view<_CharT, _Traits>(rhs);
 }
-} // namespace cxx17
+//-----------------------------------------------------------------
+// FNV1a hash from msvc++
+#  if YASIO__64BITS
+static constexpr size_t _FNV_offset_basis = 14695981039346656037ULL;
+static constexpr size_t _FNV_prime        = 1099511628211ULL;
+#  else  /* defined(_M_X64), etc. */
+static constexpr size_t _FNV_offset_basis = 2166136261U;
+static constexpr size_t _FNV_prime        = 16777619U;
+#  endif /* defined(_M_X64), etc. */
+inline size_t _FNV1a_hash(const void* _First, size_t _Count)
+{ // FNV-1a hash function for bytes in [_First, _First+_Count)
+  size_t _Val = _FNV_offset_basis;
+  for (size_t _Next = 0; _Next < _Count; ++_Next)
+  { // fold in another byte
+    _Val ^= (size_t) static_cast<const unsigned char*>(_First)[_Next];
+    _Val *= _FNV_prime;
+  }
 
+  return (_Val);
+}
+} // namespace cxx17
+namespace std
+{
+template <class _Elem> struct hash<cxx17::basic_string_view<_Elem>>
+{ // hash functor for basic_string_view
+  typedef cxx17::basic_string_view<_Elem> _Kty;
+
+  size_t operator()(const _Kty& _Keyval) const
+  { // hash _Keyval to size_t value by pseudorandomizing transform
+#  if defined(__clang__)
+    __do_string_hash(_Keyval.data(), _Keyval.data() + _Keyval.size());
+#  elif defined(__GNUC__)
+    return _Hash_impl::hash(_Keyval.data(), _Keyval.size() * sizeof(_Elem));
+#  else // msvc++ or other compiler without stable hash bytes function exists
+    return ::cxx17::_FNV1a_hash(_Keyval.data(), _Keyval.size() * sizeof(_Elem));
+#  endif
+  }
+};
+} // namespace std
+#endif
+
+#if YASIO__HAS_FULL_CXX11
+namespace cxx17
+{
+// basic_string_view LITERALS
+inline namespace literals
+{
+inline namespace string_view_literals
+{
+inline cxx17::string_view operator"" _sv(const char* _Str, size_t _Len)
+{
+  return cxx17::string_view(_Str, _Len);
+}
+inline cxx17::wstring_view operator"" _sv(const wchar_t* _Str, size_t _Len)
+{
+  return cxx17::wstring_view(_Str, _Len);
+}
+inline cxx17::u16string_view operator"" _sv(const char16_t* _Str, size_t _Len)
+{
+  return cxx17::u16string_view(_Str, _Len);
+}
+inline cxx17::u32string_view operator"" _sv(const char32_t* _Str, size_t _Len)
+{
+  return cxx17::u32string_view(_Str, _Len);
+}
+} // namespace string_view_literals
+} // namespace literals
+} // namespace cxx17
 #endif
 
 namespace cxx17

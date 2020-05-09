@@ -10,7 +10,10 @@ timer_cb_t create_timer_cb();
 
 io_service& get_service() { return *yasio_shared_service(); }
 
-static yasio::highp_time_t getTimeStamp() { return yasio::highp_clock<yasio::system_clock_t>() / 1000; }
+static yasio::highp_time_t getTimeStamp()
+{
+  return yasio::highp_clock<yasio::system_clock_t>() / 1000;
+}
 
 void start_exprie_timer()
 {
@@ -37,6 +40,7 @@ timer_cb_t create_timer_cb()
     {
       printf("create_timer_cb start_exprie_timer\n");
     }
+    return true;
   };
 }
 
@@ -44,7 +48,7 @@ int main()
 {
   get_service().set_option(YOPT_C_REMOTE_ENDPOINT, 0, "www.ip138.com", 80);
   get_service().set_option(YOPT_S_DEFERRED_EVENT, 0); // dispatch event at network thread directly
-  get_service().start_service([&](event_ptr&& ev) {
+  get_service().start([&](event_ptr&& ev) {
     switch (ev->kind())
     {
       case YEK_PACKET: {
@@ -82,13 +86,14 @@ int main()
     }
   });
   // open channel 0 as tcp client
-  get_service().open(0, YCM_TCP_CLIENT);
+  get_service().open(0, YCK_TCP_CLIENT);
 
   std::this_thread::sleep_for(std::chrono::microseconds(1000 * 1000));
   printf("tmp timer call at %lld\n", getTimeStamp());
-  get_service().schedule(
-      std::chrono::milliseconds(1),
-      []() { printf("tmp timer start at %lld\n", getTimeStamp()); });
+  get_service().schedule(std::chrono::milliseconds(1), []() {
+    printf("tmp timer start at %lld\n", getTimeStamp());
+    return true;
+  });
 
   getchar();
 }

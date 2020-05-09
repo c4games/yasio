@@ -20,9 +20,9 @@ using namespace yasio::inet;
 #define USE_KCP 1
 
 #if USE_KCP
-#  define TRANSFER_PROTOCOL YCM_KCP_CLIENT
+#  define TRANSFER_PROTOCOL YCK_KCP_CLIENT
 #else
-#  define TRANSFER_PROTOCOL YCM_UDP_CLIENT
+#  define TRANSFER_PROTOCOL YCK_UDP_CLIENT
 #endif
 
 static double s_time_elapsed          = 0;
@@ -38,7 +38,7 @@ void setup_kcp_transfer(transport_handle_t handle)
 
 void udp_send_repeat_forever(io_service* service, transport_handle_t thandle, obstream* obs)
 {
-  auto cb = [=] { udp_send_repeat_forever(service, thandle, obs); };
+  auto cb = [=](int,size_t) { udp_send_repeat_forever(service, thandle, obs); };
 
   service->write(thandle, obs->buffer(), cb);
 }
@@ -57,13 +57,13 @@ void kcp_send_repeat_forever(io_service* service, transport_handle_t thandle, ob
 void start_sender(io_service& service)
 {
   static const int PER_PACKET_SIZE =
-      TRANSFER_PROTOCOL == YCM_KCP_CLIENT ? YASIO_SZ(62, k) : YASIO_SZ(63, k);
+      TRANSFER_PROTOCOL == YCK_KCP_CLIENT ? YASIO_SZ(62, k) : YASIO_SZ(63, k);
   static char buffer[PER_PACKET_SIZE];
   static obstream obs;
   obs.write_bytes(buffer, PER_PACKET_SIZE);
   deadline_timer timer(service);
 
-  service.start_service([&](event_ptr event) {
+  service.start([&](event_ptr event) {
     switch (event->kind())
     {
       case YEK_PACKET: {
@@ -73,7 +73,15 @@ void start_sender(io_service& service)
         if (event->status() == 0)
         {
           auto thandle = event->transport();
-          if (TRANSFER_PROTOCOL == YCM_KCP_CLIENT)
+          // because some system's default sndbuf of udp is less than 64k, such as macOS.
+          int sndbuf = 65536;
+          xxsocket::set_last_errno(0);
+          service.set_option(YOPT_SOCKOPT, static_cast<io_base*>(thandle), SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(int));
+          int ec = xxsocket::get_last_errno();
+          if (ec != 0)
+            YASIO_LOG("set_option failed, ec=%d, detail:%s", ec, xxsocket::strerror(ec));
+
+          if (TRANSFER_PROTOCOL == YCK_KCP_CLIENT)
           {
             setup_kcp_transfer(thandle);
             kcp_send_repeat_forever(&service, thandle, &obs);
@@ -101,7 +109,7 @@ void start_receiver(io_service& service)
   static long long time_start   = yasio::highp_clock<>();
   static double last_print_time = 0;
   service.set_option(YOPT_S_DEFERRED_EVENT, 0);
-  service.start_service([&](event_ptr event) {
+  service.start([&](event_ptr event) {
     switch (event->kind())
     {
       case YEK_PACKET: {
@@ -133,7 +141,15 @@ void start_receiver(io_service& service)
       case YEK_CONNECT_RESPONSE:
         if (event->status() == 0)
         {
-          if (TRANSFER_PROTOCOL == YCM_KCP_CLIENT)
+          int sndbuf = 65536;
+          xxsocket::set_last_errno(0);
+          service.set_option(YOPT_SOCKOPT, static_cast<io_base*>(event->transport()), SOL_SOCKET, SO_SNDBUF,
+                             &sndbuf, sizeof(int));
+          int ec = xxsocket::get_last_errno();
+          if (ec != 0)
+            YASIO_LOG("set_option failed, ec=%d, detail:%s", ec, xxsocket::strerror(ec));
+
+          if (TRANSFER_PROTOCOL == YCK_KCP_CLIENT)
             setup_kcp_transfer(event->transport());
           printf("start recive data...\n");
         }

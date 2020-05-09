@@ -12,7 +12,7 @@ int main()
   };
   io_service service(endpoints, YASIO_ARRAYSIZE(endpoints));
   deadline_timer delay_timer(service);
-  service.start_service([&](event_ptr event) {
+  service.start([&](event_ptr event) {
     switch (event->kind())
     {
       case YEK_PACKET:
@@ -51,10 +51,12 @@ int main()
   service.set_option(YOPT_C_LFBFD_PARAMS, 1, 65535, 0, 4, 0);
   service.set_option(YOPT_C_LFBFD_IBTS, 1, 4);  // Sets initial bytes to strip
   service.set_option(YOPT_S_DEFERRED_EVENT, 0); // disable event queue
-  service.open(0, YCM_TCP_SERVER);              // open server
+  service.open(0, YCK_TCP_SERVER);              // open server
 
   delay_timer.expires_from_now(std::chrono::seconds(1));
-  delay_timer.async_wait([&]() { service.open(1, YCM_TCP_CLIENT); });
+  delay_timer.async_wait_once([&]() {
+    service.open(1, YCK_TCP_CLIENT);
+  });
 
   getchar();
   return 0;

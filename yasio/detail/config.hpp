@@ -27,6 +27,7 @@ SOFTWARE.
 */
 #ifndef YASIO__CONFIG_HPP
 #define YASIO__CONFIG_HPP
+#include "yasio/compiler/feature_test.hpp"
 
 /*
 ** Uncomment or add compiler flag -DYASIO_HEADER_ONLY to enable yasio core implementation header
@@ -40,15 +41,12 @@ SOFTWARE.
 // #define YASIO_VERBOSE_LOG 1
 
 /*
-** Uncomment or add compiler flag -DYASIO_DISABLE_SPSC_QUEUE to disable SPSC queue in io_service
-** Remark: Most of time, this library may used in game engines:
-**      1. send message: post send request at renderer thread, and perform send at `io_service`
-**         thread.
-**      2. receive message: unpack message at `io_service` thread, consume message at renderer
-**         thread.
-**      3. If you want use this library in other situation, you may need uncomment it.
+** Uncomment or add compiler flag -DYASIO_USE_SPSC_QUEUE to use SPSC queue in io_service
+** Remark: By default, yasio use std's queue + mutex to ensure thread safe, If you want
+**         more fast messege queue and only have one thread to call io_service write APIs,
+**         you may need uncomment it.
 */
-// #define YASIO_DISABLE_SPSC_QUEUE 1
+// #define YASIO_USE_SPSC_QUEUE 1
 
 /*
 ** Uncomment or add compiler flag -DYASIO_DISABLE_OBJECT_POOL to disable object_pool for allocating
@@ -81,17 +79,23 @@ SOFTWARE.
 // #define YASIO_HAVE_SSL 1
 
 /*
-** Uncomment or add compiler flag -DYASIO_DISABLE_CONCURRENT_SINGLETON to disable concurrent singleton
+** Uncomment or add compiler flag -DYASIO_DISABLE_CONCURRENT_SINGLETON to disable concurrent
+*singleton
 */
 // #define YASIO_DISABLE_CONCURRENT_SINGLETON 1
 
-/* 
+/*
 ** Workaround for 'vs2013 without full c++11 support', in the future, drop vs2013 support and
 ** follow 3 lines code will be removed
 */
-#if defined(_MSC_VER) && _MSC_VER < 1900 && !defined(YASIO_DISABLE_CONCURRENT_SINGLETON)
-  #define YASIO_DISABLE_CONCURRENT_SINGLETON 1
+#if !YASIO__HAS_FULL_CXX11 && !defined(YASIO_DISABLE_CONCURRENT_SINGLETON)
+#  define YASIO_DISABLE_CONCURRENT_SINGLETON 1
 #endif
+
+/*
+** Uncomment or add compiler flag -DYASIO_NO_EXCEPTIONS to disable exceptions
+*/
+// #define YASIO_NO_EXCEPTIONS 1
 
 #if defined(YASIO_HEADER_ONLY)
 #  define YASIO__DECL inline
@@ -99,30 +103,30 @@ SOFTWARE.
 #  define YASIO__DECL
 #endif
 
-#if defined(_MSC_VER) && _MSC_VER <= 1800
-#  define YASIO__HAVE_NS_INLINE 0
-#  define YASIO__NS_INLINE
-#else
-#  define YASIO__HAVE_NS_INLINE 1
-#  define YASIO__NS_INLINE inline
-#endif
-
 #if defined(_WIN32)
-#  define YASIO_LOG(format, ...)                                                                   \
-    OutputDebugStringA(::yasio::strfmt(127, ("%s" format "\n"), "[yasio]", ##__VA_ARGS__).c_str())
+#  define YASIO_TLOG(tag, format, ...)                                                             \
+    OutputDebugStringA(::yasio::strfmt(127, (tag format "\n"), ##__VA_ARGS__).c_str())
 #elif defined(ANDROID) || defined(__ANDROID__)
 #  include <android/log.h>
 #  include <jni.h>
-#  define YASIO_LOG(format, ...)                                                                   \
-    __android_log_print(ANDROID_LOG_INFO, "yasio", ("%s" format), "[yasio]", ##__VA_ARGS__)
+#  define YASIO_TLOG(tag, format, ...)                                                             \
+    __android_log_print(ANDROID_LOG_INFO, "yasio", (tag format), ##__VA_ARGS__)
 #else
-#  define YASIO_LOG(format, ...) printf(("%s" format "\n"), "[yasio]", ##__VA_ARGS__)
+#  define YASIO_TLOG(tag, format, ...) printf((tag format "\n"), ##__VA_ARGS__)
 #endif
+
+#define YASIO_LOG(format, ...) YASIO_TLOG("[yasio]", format, ##__VA_ARGS__)
 
 #if !defined(YASIO_VERBOSE_LOG)
 #  define YASIO_LOGV(fmt, ...) (void)0
 #else
 #  define YASIO_LOGV YASIO_LOG
+#endif
+
+#if !defined(YASIO_NO_EXCEPTIONS)
+#  define YASIO__THROW(x, retval) throw(x)
+#else
+#  define YASIO__THROW(x, retval) return (retval)
 #endif
 
 #define YASIO_ARRAYSIZE(A) (sizeof(A) / sizeof((A)[0]))
@@ -154,9 +158,6 @@ SOFTWARE.
 // The max wait duration in macroseconds when io_service nothing to do.
 #define YASIO_MAX_WAIT_DURATION 5 * 60 * 1000 * 1000
 
-// The the min wait duration in macroseconds when kernel send buffer is full.
-#define YASIO_WOULDBLOCK_WAIT_DURATION 16667
-
 // The default ttl of multicast
 #define YASIO_DEFAULT_MULTICAST_TTL (int)128
 
@@ -168,6 +169,13 @@ SOFTWARE.
 
 // The max Initial Bytes To Strip for length field based frame decode mechanism
 #define YASIO_MAX_IBTS 32
+
+// The fallback name servers when c-ares can't get name servers from system config,
+// For Android 8 or later, will always use the fallback name servers, for detail,
+// please see:
+//   https://github.com/c-ares/c-ares/issues/276
+//   https://github.com/c-ares/c-ares/pull/148
+#define YASIO_CARES_FALLBACK_DNS "8.8.8.8,223.5.5.5,114.114.114.114"
 
 #include "strfmt.hpp"
 
